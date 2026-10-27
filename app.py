@@ -328,6 +328,16 @@ def text_reply(msg: dict, content: str) -> bytes:
 _reply_cache: dict[str, tuple[str, float]] = {}
 _QUERY_RE = re.compile(r"待办|今天有啥|有啥事|清单|要做什么|还有啥")
 
+# 线上排查用的计数器（内存态，重启清零）
+STATS: dict[str, Any] = {
+    "received": 0,
+    "replied": 0,
+    "last_at": None,
+    "last_text": "",
+    "last_reply": "",
+    "openids": [],
+}
+
 
 def handle_message(msg: dict) -> str:
     openid = msg.get("FromUserName", "")
@@ -402,7 +412,14 @@ def app(environ: dict, start_response: Callable) -> list[bytes]:
             "deepseek_configured": bool(DEEPSEEK_KEY),
             "token_configured": WX_TOKEN != "change-me",
             "users": len(_todos),
+            "received": STATS["received"],
+            "replied": STATS["replied"],
+            "last_at": STATS["last_at"],
         }, ensure_ascii=False).encode("utf-8")
+        return _respond(start_response, payload, ctype="application/json; charset=utf-8")
+
+    if path == "/stats" and method == "GET":
+        payload = json.dumps(STATS, ensure_ascii=False).encode("utf-8")
         return _respond(start_response, payload, ctype="application/json; charset=utf-8")
 
     if path == "/admin/push" and method == "POST":
@@ -442,11 +459,22 @@ def app(environ: dict, start_response: Callable) -> list[bytes]:
     if cached and time.time() - cached[1] < 300:
         return _respond(start_response, text_reply(msg, cached[0]))
 
+    STATS["received"] += 1
+    STATS["last_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    STATS["last_text"] = (msg.get("Content") or msg.get("MsgType", ""))[:60]
+    oid = msg.get("FromUserName", "")
+    if oid and oid not in STATS["openids"]:
+        STATS["openids"].append(oid)
+        del STATS["openids"][:20]
+
     try:
         answer = handle_message(msg)
     except Exception as e:  # noqa: BLE001
         print(f"[wx] 处理异常: {type(e).__name__}: {e}", flush=True)
         answer = "嗯……刚出了点岔子，你再说一次。"
+
+    STATS["replied"] += 1
+    STATS["last_reply"] = answer[:60]
 
     _reply_cache[msg_id] = (answer, time.time())
     if len(_reply_cache) > 500:
