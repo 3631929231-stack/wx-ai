@@ -1,0 +1,6 @@
+﻿.env
+__pycache__/
+*.pyc
+_test_data/
+_try_data/
+
